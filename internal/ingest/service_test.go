@@ -61,84 +61,84 @@ func TestWebhookStoresEventAndCall(t *testing.T) {
 	}
 }
 
-// func TestConcurrentDuplicateDeliveryIsIgnored(t *testing.T) {
-// 	srv, st := testutil.NewServer(t)
-// 	eventID, callID, accountID := testutil.IDs(t, st)
-// 	body := eventJSON(eventID, callID, accountID)
+func TestConcurrentDuplicateDeliveryIsIgnored(t *testing.T) {
+	srv, st := testutil.NewServer(t)
+	eventID, callID, accountID := testutil.IDs(t, st)
+	body := eventJSON(eventID, callID, accountID)
 
-// 	const deliveries = 20
+	const deliveries = 20
 
-// 	errCh := make(chan error, deliveries)
+	errCh := make(chan error, deliveries)
 
-// 	for i := 0; i < deliveries; i++ {
-// 		go func() {
-// 			resp, err := http.Post(
-// 				srv.URL+"/webhooks/calls",
-// 				"application/json",
-// 				strings.NewReader(body),
-// 			)
-// 			if err != nil {
-// 				errCh <- err
-// 				return
-// 			}
-// 			defer resp.Body.Close()
+	for i := 0; i < deliveries; i++ {
+		go func() {
+			resp, err := http.Post(
+				srv.URL+"/webhooks/calls",
+				"application/json",
+				strings.NewReader(body),
+			)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer resp.Body.Close()
 
-// 			if resp.StatusCode != http.StatusOK {
-// 				errCh <- fmt.Errorf("got status %d, want 200", resp.StatusCode)
-// 				return
-// 			}
+			if resp.StatusCode != http.StatusOK {
+				errCh <- fmt.Errorf("got status %d, want 200", resp.StatusCode)
+				return
+			}
 
-// 			errCh <- nil
-// 		}()
-// 	}
+			errCh <- nil
+		}()
+	}
 
-// 	for i := 0; i < deliveries; i++ {
-// 		if err := <-errCh; err != nil {
-// 			t.Fatal(err)
-// 		}
-// 	}
+	for i := 0; i < deliveries; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
 
-// 	ctx := context.Background()
+	ctx := context.Background()
 
-// 	var eventCount int
-// 	err := st.Pool().QueryRow(
-// 		ctx,
-// 		`SELECT count(*) FROM events WHERE event_id = $1`,
-// 		eventID,
-// 	).Scan(&eventCount)
-// 	if err != nil {
-// 		t.Fatalf("count events: %v", err)
-// 	}
+	var eventCount int
+	err := st.Pool().QueryRow(
+		ctx,
+		`SELECT count(*) FROM events WHERE event_id = $1`,
+		eventID,
+	).Scan(&eventCount)
+	if err != nil {
+		t.Fatalf("count events: %v", err)
+	}
 
-// 	if eventCount != 1 {
-// 		t.Fatalf("stored %d copies of %s, want 1", eventCount, eventID)
-// 	}
+	if eventCount != 1 {
+		t.Fatalf("stored %d copies of %s, want 1", eventCount, eventID)
+	}
 
-// 	var statsCount int
-// 	err = st.Pool().QueryRow(
-// 		ctx,
-// 		`SELECT call_count FROM account_stats WHERE account_id = $1`,
-// 		accountID,
-// 	).Scan(&statsCount)
-// 	if err != nil {
-// 		t.Fatalf("get account stats: %v", err)
-// 	}
+	var statsCount int
+	err = st.Pool().QueryRow(
+		ctx,
+		`SELECT call_count FROM account_stats WHERE account_id = $1`,
+		accountID,
+	).Scan(&statsCount)
+	if err != nil {
+		t.Fatalf("get account stats: %v", err)
+	}
 
-// 	if statsCount != 1 {
-// 		t.Fatalf("account stats count = %d, want 1", statsCount)
-// 	}
+	if statsCount != 1 {
+		t.Fatalf("account stats count = %d, want 1", statsCount)
+	}
 
-// 	var callCount int
-// 	err = st.Pool().QueryRow(
-// 		ctx,
-// 		`SELECT count(*) FROM calls WHERE call_id = $1`,
-// 		callID,
-// 	).Scan(&callCount)
-// 	if err != nil {
-// 		t.Fatalf("count calls: %v", err)
-// 	}
+	var callCount int
+	err = st.Pool().QueryRow(
+		ctx,
+		`SELECT count(*) FROM calls WHERE call_id = $1`,
+		callID,
+	).Scan(&callCount)
+	if err != nil {
+		t.Fatalf("count calls: %v", err)
+	}
 
-// 	if callCount != 1 {
-// 		t.Fatalf("stored %d calls, want 1", callCount)
-// 	}
-// }
+	if callCount != 1 {
+		t.Fatalf("stored %d calls, want 1", callCount)
+	}
+}

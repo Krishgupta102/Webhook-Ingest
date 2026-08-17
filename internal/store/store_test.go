@@ -26,8 +26,12 @@ func TestInsertEventThenExists(t *testing.T) {
 		t.Fatal("expected event to be absent before insert")
 	}
 
-	if err := s.InsertEvent(ctx, evt); err != nil {
+	inserted, err := s.InsertEvent(ctx, evt)
+	if err != nil {
 		t.Fatalf("InsertEvent: %v", err)
+	}
+	if !inserted {
+		t.Fatal("expected event to be inserted")
 	}
 
 	exists, err = s.EventExists(ctx, eventID)
@@ -36,6 +40,51 @@ func TestInsertEventThenExists(t *testing.T) {
 	}
 	if !exists {
 		t.Fatal("expected event to exist after insert")
+	}
+}
+
+func TestInsertDuplicateEventIsIgnored(t *testing.T) {
+	s := testutil.NewStore(t)
+	eventID, callID, accountID := testutil.IDs(t, s)
+	ctx := context.Background()
+
+	evt := store.Event{
+		EventID:     eventID,
+		CallID:      callID,
+		AccountID:   accountID,
+		Status:      "completed",
+		DurationSec: 10,
+		Payload:     []byte(`{}`),
+	}
+
+	inserted, err := s.InsertEvent(ctx, evt)
+	if err != nil {
+		t.Fatalf("first InsertEvent: %v", err)
+	}
+	if !inserted {
+		t.Fatal("expected first insert to succeed")
+	}
+
+	inserted, err = s.InsertEvent(ctx, evt)
+	if err != nil {
+		t.Fatalf("second InsertEvent: %v", err)
+	}
+	if inserted {
+		t.Fatal("expected duplicate insert to be ignored")
+	}
+
+	var count int
+	err = s.Pool().QueryRow(
+		ctx,
+		`SELECT count(*) FROM events WHERE event_id = $1`,
+		eventID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+
+	if count != 1 {
+		t.Fatalf("stored %d copies, want 1", count)
 	}
 }
 
