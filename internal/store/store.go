@@ -114,6 +114,106 @@ func (s *Store) InsertEvent(ctx context.Context, e Event) (bool, error) {
 	return result.RowsAffected() == 1, nil
 }
 
+// IngestEvent atomically stores the event, call, and account statistics.
+//
+// If the event is a duplicate, no work is performed and inserted is false.
+// If any operation fails, the entire transaction is rolled back.
+func (s *Store) IngestEvent(ctx context.Context, e Event) (inserted bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	// Rollback is safe even after a successful Commit because pgx
+	// will simply report that the transaction is already closed.
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	// Insert the event atomically with duplicate detection.
+	result, err := tx.Exec(
+		ctx,
+		`INSERT INTO events (
+			event_id,
+			call_id,
+			account_id,
+			payload
+		)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (event_id) DO NOTHING`,
+		e.EventID,
+		e.CallID,
+		e.AccountID,
+		e.Payload,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	// Duplicate event: nothing else should be processed.
+	if result.RowsAffected() == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	// Create or update the call record.
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO calls (
+			call_id,
+			account_id,
+			status,
+			duration_sec,
+			recording_url,
+			updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, now())
+		ON CONFLICT (call_id) DO UPDATE SET
+			status        = EXCLUDED.status,
+			duration_sec  = EXCLUDED.duration_sec,
+			recording_url = EXCLUDED.recording_url,
+			updated_at    = now()`,
+		e.CallID,
+		e.AccountID,
+		e.Status,
+		e.DurationSec,
+		e.RecordingURL,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	// Update the durable account aggregate.
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO account_stats (
+			account_id,
+			call_count,
+			total_duration_sec
+		)
+		VALUES ($1, 1, $2)
+		ON CONFLICT (account_id) DO UPDATE SET
+			call_count =
+				account_stats.call_count + 1,
+			total_duration_sec =
+				account_stats.total_duration_sec + EXCLUDED.total_duration_sec`,
+		e.AccountID,
+		e.DurationSec,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	// Everything succeeded.
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 // UpsertCall creates or refreshes the call record for this event.
 func (s *Store) UpsertCall(ctx context.Context, e Event) error {
 	_, err := s.pool.Exec(
@@ -174,8 +274,7 @@ func (s *Store) IncrementAccountStats(
 			call_count =
 				account_stats.call_count + 1,
 			total_duration_sec =
-				account_stats.total_duration_sec
-				+ EXCLUDED.total_duration_sec`,
+				account_stats.total_duration_sec + EXCLUDED.total_duration_sec`,
 		accountID,
 		durationSec,
 	)
