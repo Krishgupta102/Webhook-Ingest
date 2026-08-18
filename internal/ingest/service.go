@@ -45,12 +45,7 @@ func (s *Service) Stats(accountID string) stats.AccountStats {
 }
 
 // Ingest stores a delivery and kicks off processing.
-//
-// The event, call record, and account statistics are persisted
-// atomically by the store. Duplicate deliveries are ignored.
-//
-// Recording processing runs asynchronously so the provider gets
-// a fast acknowledgement.
+// Processing runs asynchronously so the provider gets a fast acknowledgement.
 func (s *Service) Ingest(ctx context.Context, evt Event) error {
 	payload, err := json.Marshal(evt)
 	if err != nil {
@@ -68,15 +63,17 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 		Payload:      payload,
 	}
 
-	// Store the event, call record, and account statistics
-	// in one database transaction.
+	// IngestEvent performs the duplicate check and all database writes
+	// atomically inside PostgreSQL.
+	//
+	// This prevents concurrent duplicate deliveries from being processed
+	// more than once and prevents partial writes if one operation fails.
 	inserted, err := s.store.IngestEvent(ctx, rec)
 	if err != nil {
 		return err
 	}
 
-	// PostgreSQL's unique constraint guarantees that only one
-	// concurrent delivery can insert a given event_id.
+	// The event already exists. Treat the redelivery as successfully handled.
 	if !inserted {
 		s.log.Info(
 			"duplicate delivery ignored",
@@ -85,22 +82,20 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 		return nil
 	}
 
-	// Keep the in-memory cache synchronized with the durable
-	// database aggregate.
-	s.cache.Record(
-		rec.AccountID,
-		rec.DurationSec,
-	)
+	// Keep the in-memory cache in sync only after the durable database
+	// transaction has successfully committed.
+	s.cache.Record(rec.AccountID, rec.DurationSec)
 
-	// Recordings are slow to fetch, so that part does not block
-	// the provider from receiving the webhook acknowledgement.
+	// Recordings are slow to fetch, so that work does not block the
+	// provider's webhook acknowledgement.
 	if rec.RecordingURL != "" {
 		go func() {
-			if err := s.processRecording(ctx, rec); err != nil {
+			if err := s.processRecording(rec); err != nil {
 				s.log.Error(
 					"recording processing failed",
+					"event_id", rec.EventID,
 					"call_id", rec.CallID,
-					"error", err,
+					"err", err,
 				)
 			}
 		}()
@@ -110,15 +105,15 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 }
 
 // processRecording downloads and transcodes the call recording,
-// then marks the call as done.
-func (s *Service) processRecording(
-	ctx context.Context,
-	rec store.Event,
-) error {
+// then marks the call as processed.
+func (s *Service) processRecording(rec store.Event) error {
 	time.Sleep(recordingWork)
 
+	// Do not use the HTTP request context here. The request may already
+	// have completed or been cancelled by the time this background work
+	// finishes.
 	return s.store.MarkRecordingProcessed(
-		ctx,
+		context.Background(),
 		rec.CallID,
 	)
 }
