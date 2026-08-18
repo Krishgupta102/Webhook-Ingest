@@ -218,3 +218,53 @@ func TestRecordingIsProcessedAfterWebhookReturns(t *testing.T) {
 		t.Fatal("expected recording to be marked processed")
 	}
 }
+
+func TestShutdownWaitsForRecordingProcessing(t *testing.T) {
+	srv, st := testutil.NewServer(t)
+	eventID, callID, accountID := testutil.IDs(t, st)
+
+	body := eventJSON(eventID, callID, accountID)
+
+	resp := post(t, srv.URL+"/webhooks/calls", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+
+	ctx := context.Background()
+
+	var processed bool
+	row := st.Pool().QueryRow(
+		ctx,
+		`SELECT recording_processed
+		 FROM calls
+		 WHERE call_id = $1`,
+		callID,
+	)
+
+	if err := row.Scan(&processed); err != nil {
+		t.Fatalf("scan recording_processed: %v", err)
+	}
+
+	if processed {
+		t.Fatal("recording should still be processing immediately after webhook")
+	}
+
+	// Give the background recording work enough time to finish.
+	time.Sleep(100 * time.Millisecond)
+
+	row = st.Pool().QueryRow(
+		ctx,
+		`SELECT recording_processed
+		 FROM calls
+		 WHERE call_id = $1`,
+		callID,
+	)
+
+	if err := row.Scan(&processed); err != nil {
+		t.Fatalf("scan recording_processed after processing: %v", err)
+	}
+
+	if !processed {
+		t.Fatal("expected recording to be processed")
+	}
+}

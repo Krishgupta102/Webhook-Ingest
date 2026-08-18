@@ -40,11 +40,17 @@ func main() {
 	defer func() { _ = rdb.Close() }()
 
 	svc := ingest.New(st, stats.NewCache(), rdb, log)
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(svc, log)}
+
+	srv := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: httpapi.NewRouter(svc, log),
+	}
 
 	go func() {
 		log.Info("listening", "addr", cfg.HTTPAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+
+		if err := srv.ListenAndServe(); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
 			log.Error("server stopped", "err", err)
 			os.Exit(1)
 		}
@@ -55,9 +61,24 @@ func main() {
 	<-stop
 
 	log.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		shutdownTimeout,
+	)
 	defer cancel()
+
+	// First stop accepting new HTTP requests and wait for existing
+	// request handlers to finish.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("shutdown", "err", err)
+		log.Error("http shutdown", "err", err)
 	}
+
+	// Now wait for background recording jobs that were started by
+	// successfully accepted webhooks.
+	if err := svc.Shutdown(shutdownCtx); err != nil {
+		log.Error("background shutdown", "err", err)
+	}
+
+	log.Info("shutdown complete")
 }

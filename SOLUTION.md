@@ -31,9 +31,18 @@ This means the database changes either all commit or none of them do.
 
 ### 3. Recording processing could disappear after the request ended
 
-Recording processing was started in a goroutine using the HTTP request context. Once the HTTP request completed or its context was cancelled, the background operation could be cancelled before marking the recording as processed.
+Recording processing was started in a goroutine using the HTTP request context.
+Once the HTTP request completed or its context was cancelled, the background
+operation could be cancelled before marking the recording as processed.
 
-The background processing now does not depend on the request context. It uses a separate context for the asynchronous work and logs failures instead of silently discarding them.
+The background processing was changed to use its own context instead of the
+request context, and recording workers are tracked so graceful shutdown waits
+for in-flight recording work to finish. Processing failures are logged instead
+of being silently discarded.
+
+For a larger production system, recording work should eventually be moved to
+a durable queue so that work survives process crashes and deployments rather
+than relying only on graceful shutdown.
 
 ## Deduplication strategy
 

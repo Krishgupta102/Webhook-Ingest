@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -22,6 +23,10 @@ type Service struct {
 	cache *stats.Cache
 	rdb   *redis.Client
 	log   *slog.Logger
+
+	// wg tracks background recording jobs so they can finish before
+	// the process exits during graceful shutdown.
+	wg sync.WaitGroup
 }
 
 // New builds a Service.
@@ -89,7 +94,11 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 	// Recordings are slow to fetch, so that work does not block the
 	// provider's webhook acknowledgement.
 	if rec.RecordingURL != "" {
+		s.wg.Add(1)
+
 		go func() {
+			defer s.wg.Done()
+
 			if err := s.processRecording(rec); err != nil {
 				s.log.Error(
 					"recording processing failed",
@@ -116,4 +125,22 @@ func (s *Service) processRecording(rec store.Event) error {
 		context.Background(),
 		rec.CallID,
 	)
+}
+
+// Shutdown waits for all currently running background recording jobs
+// to finish before the service exits.
+func (s *Service) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
